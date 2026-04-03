@@ -1,126 +1,103 @@
-import pytest
+from __future__ import annotations
 
-from app.switchboard import Switchboard
-from app.users import ForeignUser, LocalUser
+from dataclasses import dataclass
 
-
-LOCAL_1 = "1,Ivan Ivanov,+79990000000"
-LOCAL_2 = "4,Petr Petrov,+78880000000"
-LOCAL_3 = "7,Maria Petrova,+79991112233"
-
-FOREIGN_1 = "2,John Smith,+15551234567"
-FOREIGN_2 = "3,Jane Doe,+33123456789"
-FOREIGN_3 = "5,Alex Doe,+442012345678"
-FOREIGN_4 = "6,John Doe,+33123456780"
+from app.users import User, LocalUser, ForeignUser
 
 
-def make_call(caller: str, receiver: str) -> str:
-    return f"{caller},{receiver}"
+LOCAL_PHONE_PREFIX = "+7"
 
 
-LOCAL_TO_FOREIGN_CALL = make_call(LOCAL_1, FOREIGN_1)
-FOREIGN_TO_LOCAL_CALL = make_call(FOREIGN_1, LOCAL_1)
-LOCAL_TO_LOCAL_CALL = make_call(LOCAL_1, LOCAL_2)
-FOREIGN_TO_FOREIGN_CALL = make_call(FOREIGN_1, FOREIGN_2)
-SECOND_LOCAL_TO_LOCAL_CALL = make_call(LOCAL_2, LOCAL_3)
-SECOND_FOREIGN_TO_FOREIGN_CALL = make_call(FOREIGN_3, FOREIGN_4)
+@dataclass(slots=True)
+class ActiveCall:
+    caller: User
+    receiver: User
+
+    @property
+    def is_cross_border(self) -> bool:
+        return type(self.caller) is not type(self.receiver)
 
 
-@pytest.fixture
-def switchboard() -> Switchboard:
-    return Switchboard()
+def _validate_raw_call_type(raw_call: str) -> None:
+    if not isinstance(raw_call, str):
+        raise TypeError("raw_call must be str")
 
 
-@pytest.mark.parametrize(
-    ("raw_call", "expected_error"),
-    [
-        ("1,Ivan Ivanov,+79990000000,2,John Smith", ValueError),
-        ("1,Ivan Ivanov,+79990000000,2,John Smith,+15551234567,extra", ValueError),
-        ("abc,Ivan Ivanov,+79990000000,2,John Smith,+15551234567", ValueError),
-        ("1,Ivan Ivanov,+79990000000,xyz,John Smith,+15551234567", ValueError),
-        ("1,   ,+79990000000,2,John Smith,+15551234567", ValueError),
-        ("1,Ivan Ivanov,+79990000000,2,   ,+15551234567", ValueError),
-        ("1,Ivan Ivanov,   ,2,John Smith,+15551234567", ValueError),
-        ("1,Ivan Ivanov,+79990000000,2,John Smith,   ", ValueError),
-        ("", ValueError),
-        (",,,,,", ValueError),
-        (None, TypeError),
-    ],
-)
-def test_register_call_raises_error_for_invalid_input(
-    switchboard: Switchboard,
-    raw_call: str | None,
-    expected_error: type[Exception],
-) -> None:
-    with pytest.raises(expected_error):
-        switchboard.register_call(raw_call)
+def _validate_raw_call_not_empty(raw_call: str) -> None:
+    if not raw_call.strip():
+        raise ValueError("raw_call cannot be empty")
 
 
-@pytest.mark.parametrize(
-    ("raw_call", "caller_type", "receiver_type", "is_cross_border", "caller_id", "receiver_id"),
-    [
-        (LOCAL_TO_FOREIGN_CALL, LocalUser, ForeignUser, True, 1, 2),
-        (FOREIGN_TO_LOCAL_CALL, ForeignUser, LocalUser, True, 2, 1),
-        (LOCAL_TO_LOCAL_CALL, LocalUser, LocalUser, False, 1, 4),
-        (FOREIGN_TO_FOREIGN_CALL, ForeignUser, ForeignUser, False, 2, 3),
-    ],
-)
-def test_register_call_creates_expected_users(
-    switchboard: Switchboard,
-    raw_call: str,
-    caller_type: type[LocalUser | ForeignUser],
-    receiver_type: type[LocalUser | ForeignUser],
-    is_cross_border: bool,
-    caller_id: int,
-    receiver_id: int,
-) -> None:
-    active_call = switchboard.register_call(raw_call)
+def _split_raw_call(raw_call: str) -> list[str]:
+    data = [item.strip() for item in raw_call.split(",")]
 
-    assert isinstance(active_call.caller, caller_type)
-    assert isinstance(active_call.receiver, receiver_type)
-    assert active_call.is_cross_border is is_cross_border
-    assert active_call.caller.id == caller_id
-    assert active_call.receiver.id == receiver_id
+    if len(data) != 6:
+        raise ValueError("invalid format of str")
+
+    return data
 
 
-def test_register_call_does_not_add_invalid_call(
-    switchboard: Switchboard,
-) -> None:
-    with pytest.raises(ValueError):
-        switchboard.register_call(
-            "abc,Ivan Ivanov,+79990000000,2,John Smith,+15551234567"
-        )
-
-    assert switchboard.get_active_calls_count() == 0
-    assert switchboard.get_cross_border_calls_count() == 0
+def _validate_fields_not_empty(fields: list[str]) -> None:
+    if any(not field for field in fields):
+        raise ValueError("Fields cannot be empty")
 
 
-def test_register_call_counts_active_calls(
-    switchboard: Switchboard,
-) -> None:
-    switchboard.register_call(LOCAL_TO_LOCAL_CALL)
-    switchboard.register_call(SECOND_FOREIGN_TO_FOREIGN_CALL)
-
-    assert switchboard.get_active_calls_count() == 2
+def _parse_user_id(raw_user_id: str, field_name: str) -> int:
+    try:
+        return int(raw_user_id)
+    except ValueError as exc:
+        raise ValueError(f"{field_name} must be integer") from exc
 
 
-def test_register_call_counts_cross_border_calls(
-    switchboard: Switchboard,
-) -> None:
-    switchboard.register_call(LOCAL_TO_FOREIGN_CALL)
-    switchboard.register_call(SECOND_LOCAL_TO_LOCAL_CALL)
-    switchboard.register_call(SECOND_FOREIGN_TO_FOREIGN_CALL)
-
-    assert switchboard.get_active_calls_count() == 3
-    assert switchboard.get_cross_border_calls_count() == 1
+def _create_user(user_id: int, name: str, phone: str) -> User:
+    if phone.startswith(LOCAL_PHONE_PREFIX):
+        return LocalUser(user_id, name, phone)
+    return ForeignUser(user_id, name, phone)
 
 
-def test_cross_border_calls_count_increases_for_each_cross_border_call(
-    switchboard: Switchboard,
-) -> None:
-    switchboard.register_call(LOCAL_TO_FOREIGN_CALL)
-    switchboard.register_call(make_call(FOREIGN_2, LOCAL_2))
-    switchboard.register_call(SECOND_FOREIGN_TO_FOREIGN_CALL)
+def _parse_call_data(raw_call: str) -> tuple[User, User]:
+    _validate_raw_call_type(raw_call)
+    _validate_raw_call_not_empty(raw_call)
 
-    assert switchboard.get_active_calls_count() == 3
-    assert switchboard.get_cross_border_calls_count() == 2
+    data = _split_raw_call(raw_call)
+    _validate_fields_not_empty(data)
+
+    caller_id_raw, caller_name, caller_phone, receiver_id_raw, receiver_name, receiver_phone = data
+
+    caller_id = _parse_user_id(caller_id_raw, "caller_id")
+    receiver_id = _parse_user_id(receiver_id_raw, "receiver_id")
+
+    caller = _create_user(caller_id, caller_name, caller_phone)
+    receiver = _create_user(receiver_id, receiver_name, receiver_phone)
+
+    return caller, receiver
+
+
+class Switchboard:
+    def __init__(self) -> None:
+        self._active_calls: list[ActiveCall] = []
+        self._cross_border_calls: int = 0
+
+    def register_call(self, raw_call: str) -> ActiveCall:
+        """
+        Метод принимает строку формата:
+        "caller_id,caller_name,caller_phone,receiver_id,receiver_name,receiver_phone"
+
+        Например:
+        "1001,Иван Петров,+71234567890,1085,Адам Яковлев,+71255556666"
+        """
+        caller, receiver = _parse_call_data(raw_call)
+
+        active_call = ActiveCall(caller, receiver)
+        self._active_calls.append(active_call)
+
+        if active_call.is_cross_border:
+            self._cross_border_calls += 1
+
+        return active_call
+
+    def get_active_calls_count(self) -> int:
+        return len(self._active_calls)
+
+    def get_cross_border_calls_count(self) -> int:
+        return self._cross_border_calls
